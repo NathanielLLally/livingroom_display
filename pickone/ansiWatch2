@@ -1,0 +1,11 @@
+#!/bin/sh
+CMD=$*
+RENDER="toilet  -t -S -f term"
+while [ 1==1 ]; do 
+TIME=$(date +%T%P | cowsay -f turtle)
+DAY=$(date +%A| cowsay -f daemon)
+DATE=$(date +%x|cowsay -f eyes)
+	printf "\033[1J\n"; 
+	echo "$TIME\n$DAY\n$DATE" | toilet -ct -S -f term
+	sleep 1;
+done
