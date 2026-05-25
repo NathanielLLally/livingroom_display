@@ -1,0 +1,11 @@
+#!/bin/sh
+FONT=$1
+RENDER="toilet  -t -S -f term"
+while [ 1==1 ]; do 
+TIME=$(date +"%T %P")
+DAY=$(date +%A)
+DATE=$(date +%x)
+	printf "\033[1J\n"; 
+	echo "$TIME\n$DAY\n$DATE" | toilet -ct -S -f $FONT
+	sleep 1;
+done

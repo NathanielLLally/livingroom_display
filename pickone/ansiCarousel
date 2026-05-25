@@ -1,0 +1,121 @@
+#!/bin/tcsh
+#
+#  todo: precise ansi cursor control with chr erasure [insert codes here]
+#     maybe cshell
+#
+#  args processing:  go 4 it, feel free to insert yaml getopt foo below
+#
+#
+#  april 2026 nathaniel lallya
+#
+set temp = (`getopt -s tcsh -o f:vh --long frequency:,verbose,help -- $argv:q`)
+if ($? != 0) exit 1
+eval set argv = "($temp)"
+echo "argc: $#argv argv: $argv"
+alias printusage "echo $0 lookup getopt printusage tricks tcsh; echo; exit 0"
+while ($#argv > 0)
+	switch ($argv[1])
+		case "-f":
+			set update_cache = $argv[2]
+			shift; shift
+			breaksw
+		case "-v":
+			set verbose = 1
+			shift
+			breaksw
+		case "-h":
+			printusage
+			breaksw
+		case "--":
+
+			breaksw
+		default:
+			echo "unknown option $argv[1]"
+			printusage
+			breaksw
+	endsw
+end
+
+cmd=noteToSelf
+switch ($update_cache)
+	case < 5:
+		update_cache = 5
+		breaksw
+	case > 60:
+		update_cache = 50
+		breaksw
+	default:
+		update_cache = 10
+		breaksw
+endsw
+
+font=""
+fontletters="alpha"
+fontletters="crazy"
+fontletters="caligraphy"
+fontletters="broadway"
+fontspace="broadway"
+fontspace="1row"
+
+if ( -z "$font" ) then
+	font = "broadway" #no numbers
+	font = "dos_rebel"
+	font="big_money-nw"
+	font="3d_diagonal"
+	font="banner3-d"
+	font="ansi_shadow"
+endif
+
+render="toilet  -t -s -f term"
+
+w=350
+h=90
+cx=175
+cy=45
+
+y=80
+x=80
+
+alias cur_move_up "\x1b[<row>a"
+cur_move_down="\x1b[<row>b"
+cur_move_foreward="\x1b[<col>c"
+cur_move_back="\x1b[<col>d"
+cur_move="\x1b[<row>;<col>h"
+cur_move_col="\x1b[<col>g"
+save_cur="\x1b[s"
+restore_cur="\x1b[u"
+#🧼 erasing
+clr_screen="\x1b[2j"
+clr_cur_eos="\x1b[0j"
+clr_cur_bos="\x1b[1j"
+clr_line="\x1b[2k"
+clr_cur_eol="\x1b[0k"
+clr_cur_bol="\x1b[1k"
+
+printf "\033[2j"
+
+then=\ `date +"%s"`
+while ( 1==1 ) do 
+now=\ `date +"%s"`
+time=\ `date +"%l:%m:%s %p"`
+#day=$(date +"%_m/%d/%g")
+day=\ `date +"%a"`
+date=\ `date +"%b %d '%g"`
+exe=\ `basename $0`
+cmdo="printusage: $exe [cmd]"
+
+@ r = $then + $update_cache
+if ( -z "$cmdo" || ( -n "$cmd" && $now >= $r)) then
+	cmdo=\ `$cmd`
+endif
+	printf "\033[h\033[1j"
+	echo "___" | toilet -ct -s -f $fontspace
+	echo "$time\n" | toilet -ct -w -f $font
+	echo "___" | toilet -ct -s -f $fontspace
+	echo "\n$day\n\n" | toilet -ct -w -f $fontletters
+	echo "___" | toilet -ct -s -f $fontspace
+	echo "___" | toilet -ct -s -f $fontspace
+	echo "\n$date\n" | toilet -ct -w -f $font
+	echo "\n$cmdo\n" | toilet -ct -w
+	sleep 0.75;
+done
