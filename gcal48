@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""gcal48 - show upcoming Google Calendar events for the next 48 hours."""
+import argparse
+import datetime as dt
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import requests
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+CONFIG_DIR = Path.home() / ".config" / "gcal48"
+CACHE_DIR = Path.home() / ".cache" / "gcal48"
+CREDENTIALS_FILE = CONFIG_DIR / "credentials.json"
+TOKEN_FILE = CONFIG_DIR / "credentials.json"
+CAL_FILE = CONFIG_DIR / "calendars.json"
+MAPS_KEY_FILE = CONFIG_DIR / "maps_key"
+CLIENT_SECRETS_FILE = CONFIG_DIR / "client_secrets.json"
+API = "https://www.googleapis.com/calendar/v3"
+DIRECTIONS_API = "https://maps.googleapis.com/maps/api/directions/json"
+ORIGIN = os.environ.get("GCAL48_ORIGIN", "17 Pennsylvania Ave, Brooklyn, NY 11207")
+DIRECTIONS_CACHE_TTL = 600
+
+R = "\033[0m"
+B = "\033[1m"
+DIM = "\033[2m"
+ITAL = "\033[3m"
+UND = "\033[4m"
+
+
+def fg_hex(hex_color: str) -> str:
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return ""
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def bg_hex(hex_color: str) -> str:
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return ""
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"\033[48;2;{r};{g};{b}m"
+
+
+def load_creds() -> Credentials:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    creds = None
+    if TOKEN_FILE.exists():
+        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+    if creds and creds.valid:
+        return creds
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        TOKEN_FILE.write_text(creds.to_json())
+        return creds
+    if not CREDENTIALS_FILE.exists():
+        creds = obtain_creds()
+        return creds
+    flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
+    creds = flow.run_local_server(port=0)
+    TOKEN_FILE.write_text(creds.to_json())
+    return creds
+
+
+def update_credentials(path: str, scopes: list[str]) -> Credentials:
+    data = load_credentials(path)
+
+    creds = Credentials(
+        token=data.get("token"),
+        refresh_token=data.get("refresh_token"),
+        token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=data.get("client_id"),
+        client_secret=data.get("client_secret"),
+        scopes=scopes,
+    )
+
+    updated = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": list(creds.scopes) if creds.scopes else scopes,
+        "expiry": creds.expiry.isoformat() if creds.expiry else data.get("expiry"),
+    }
+
+    with open(path, "w") as f:
+        json.dump(updated, f, indent=2)
+
+    print(f"Updated {path} with scopes: {scopes}")
+    return creds
+
+def api_get(creds: Credentials, path: str, params: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {creds.token}"}
+    r = requests.get(f"{API}{path}", headers=headers, params=params, timeout=30)
+    if r.status_code == 401:
+        creds.refresh(Request())
+        TOKEN_FILE.write_text(creds.to_json())
+        headers["Authorization"] = f"Bearer {creds.token}"
+        r = requests.get(f"{API}{path}", headers=headers, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def list_calendars(creds: Credentials) -> list[dict]:
+    items, page_token = [], None
+    while True:
+        params = {"maxResults": 250}
+        if page_token:
+            params["pageToken"] = page_token
+        data = api_get(creds, "/users/me/calendarList", params)
+        items.extend(data.get("items", []))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    items.sort(key=lambda c: (not c.get("primary", False), c.get("summary", "").lower()))
+    return items
+
+
+def pick_calendars(creds: Credentials) -> list[dict]:
+    cals = list_calendars(creds)
+    print(f"\n{B}Select calendars to display{R} {DIM}(numbers separated by space/comma, 'a' for all, enter to keep current){R}\n")
+    current = set()
+    if CAL_FILE.exists():
+        try:
+            current = {c["id"] for c in json.loads(CAL_FILE.read_text())}
+        except Exception:
+            pass
+    for i, c in enumerate(cals, 1):
+        color = fg_hex(c.get("backgroundColor", "#888888"))
+        mark = "●" if c["id"] in current else "○"
+        primary = f" {DIM}(primary){R}" if c.get("primary") else ""
+        access = c.get("accessRole", "")
+        print(f"  {i:>3}. {color}{mark}{R} {c.get('summary','(no name)')}{primary} {DIM}[{access}]{R}")
+    print()
+    raw = input(f"{B}> {R}").strip().lower()
+    if not raw:
+        if not current:
+            sys.exit("no calendars selected")
+        return [c for c in cals if c["id"] in current]
+    if raw == "a":
+        picks = cals
+    else:
+        idxs = []
+        for tok in raw.replace(",", " ").split():
+            try:
+                idxs.append(int(tok))
+            except ValueError:
+                pass
+        picks = [cals[i - 1] for i in idxs if 1 <= i <= len(cals)]
+    if not picks:
+        sys.exit("no calendars selected")
+    saved = [
+        {
+            "id": c["id"],
+            "summary": c.get("summary", ""),
+            "backgroundColor": c.get("backgroundColor", "#888888"),
+            "foregroundColor": c.get("foregroundColor", "#ffffff"),
+        }
+        for c in picks
+    ]
+    CAL_FILE.write_text(json.dumps(saved, indent=2))
+    print(f"{DIM}saved {len(saved)} calendars to {CAL_FILE}{R}")
+    return saved
+
+
+def load_picked() -> list[dict] | None:
+    if not CAL_FILE.exists():
+        return None
+    try:
+        return json.loads(CAL_FILE.read_text())
+    except Exception:
+        return None
+
+
+def fetch_events(creds: Credentials, calendars: list[dict], hours: int) -> list[dict]:
+    now = dt.datetime.now(dt.timezone.utc)
+    end = now + dt.timedelta(hours=hours)
+    params_base = {
+        "timeMin": now.isoformat().replace("+00:00", "Z"),
+        "timeMax": end.isoformat().replace("+00:00", "Z"),
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "maxResults": 250,
+    }
+    events = []
+    for cal in calendars:
+        cal_id = cal["id"]
+        page_token = None
+        while True:
+            params = dict(params_base)
+            if page_token:
+                params["pageToken"] = page_token
+            data = api_get(creds, f"/calendars/{requests.utils.quote(cal_id, safe='')}/events", params)
+            for ev in data.get("items", []):
+                if ev.get("status") == "cancelled":
+                    continue
+                ev["_calendar"] = cal
+                events.append(ev)
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    events.sort(key=lambda e: parse_when(e)[0])
+    return events
+
+
+def parse_when(ev: dict) -> tuple[dt.datetime, dt.datetime, bool]:
+    start = ev["start"]
+    end = ev["end"]
+    if "dateTime" in start:
+        s = dt.datetime.fromisoformat(start["dateTime"])
+        e = dt.datetime.fromisoformat(end["dateTime"])
+        return s.astimezone(), e.astimezone(), False
+    s = dt.datetime.fromisoformat(start["date"]).replace(tzinfo=dt.timezone.utc).astimezone()
+    e = dt.datetime.fromisoformat(end["date"]).replace(tzinfo=dt.timezone.utc).astimezone()
+    return s, e, True
+
+
+def day_label(d: dt.date, today: dt.date) -> str:
+    delta = (d - today).days
+    if delta == 0:
+        rel = "Today"
+    elif delta == 1:
+        rel = "Tomorrow"
+    elif delta == -1:
+        rel = "Yesterday"
+    else:
+        rel = d.strftime("%A")
+    return f"{rel}, {d.strftime('%b %-d')}"
+
+
+def load_maps_key() -> str | None:
+    env = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if env:
+        return env.strip()
+    if MAPS_KEY_FILE.exists():
+        v = MAPS_KEY_FILE.read_text().strip()
+        return v or None
+    return None
+
+
+def cache_path(key: str) -> Path:
+    import hashlib
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / (hashlib.sha1(key.encode()).hexdigest() + ".json")
+
+
+def get_directions(api_key: str, origin: str, destination: str, arrival_unix: int) -> dict | None:
+    cache_key = f"{origin}|{destination}|{arrival_unix // 300}"
+    cf = cache_path(cache_key)
+    if cf.exists() and (dt.datetime.now().timestamp() - cf.stat().st_mtime) < DIRECTIONS_CACHE_TTL:
+        try:
+            return json.loads(cf.read_text())
+        except Exception:
+            pass
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "mode": "transit",
+        "transit_mode": "train|bus",
+        "arrival_time": arrival_unix,
+        "key": api_key,
+    }
+    try:
+        r = requests.get(DIRECTIONS_API, params=params, timeout=15)
+        data = r.json()
+    except Exception as e:
+        return {"status": "ERROR", "error_message": str(e)}
+    if data.get("status") == "OK":
+        cf.write_text(json.dumps(data))
+    return data
+
+
+def summarize_directions(data: dict) -> str | None:
+    if not data:
+        return None
+    status = data.get("status")
+    if status != "OK":
+        msg = data.get("error_message") or status or "no route"
+        return f"{DIM}directions: {msg}{R}"
+    routes = data.get("routes") or []
+    if not routes:
+        return f"{DIM}directions: no route{R}"
+    leg = routes[0]["legs"][0]
+    dur = leg.get("duration", {}).get("text", "?")
+    dep = leg.get("departure_time", {}).get("text", "")
+    arr = leg.get("arrival_time", {}).get("text", "")
+    lines = []
+    for step in leg.get("steps", []):
+        td = step.get("transit_details")
+        if td:
+            short = (td.get("line") or {}).get("short_name") or (td.get("line") or {}).get("name") or "?"
+            lines.append(short)
+    line_str = " → ".join(lines) if lines else "walk"
+    times = []
+    if dep:
+        times.append(f"leave {dep}")
+    if arr:
+        times.append(f"arr {arr}")
+    when = " → ".join(times) if times else ""
+    parts = [f"transit · {dur}"]
+    if when:
+        parts.append(when)
+    parts.append(line_str)
+    return " · ".join(parts)
+
+
+def fmt_duration(td: dt.timedelta) -> str:
+    mins = int(td.total_seconds() // 60)
+    if mins < 60:
+        return f"{mins}m"
+    h, m = divmod(mins, 60)
+    return f"{h}h" if m == 0 else f"{h}h{m:02d}m"
+
+
+def render(events: list[dict], hours: int, show_directions: bool = True) -> None:
+    cols = shutil.get_terminal_size((80, 24)).columns
+    api_key = load_maps_key() if show_directions else None
+    now = dt.datetime.now().astimezone()
+    today = now.date()
+    horizon = now + dt.timedelta(hours=hours)
+    title = f" Next {hours}h — {now.strftime('%a %b %-d %H:%M %Z')} → {horizon.strftime('%a %b %-d %H:%M')} "
+    bar = "─" * max(1, cols - len(title) - 2)
+    print(f"\n{B}┌{title}{bar}{R}")
+    if not events:
+        print(f"{DIM}│  (no events){R}")
+        print(f"{B}└{'─' * (cols - 1)}{R}")
+        return
+    cur_day = None
+    for ev in events:
+        s, e, allday = parse_when(ev)
+        d = s.date()
+        if d != cur_day:
+            if cur_day is not None:
+                print(f"{DIM}│{R}")
+            label = day_label(d, today)
+            line = f"├─ {B}{label}{R} "
+            visible_len = len(f"├─ {label} ")
+            print(f"{DIM}{line}{'─' * max(1, cols - visible_len - 1)}{R}")
+            cur_day = d
+        cal = ev.get("_calendar", {})
+        color = fg_hex(cal.get("backgroundColor", "#888888"))
+        if allday:
+            when = f"{DIM}all-day        {R}"
+        else:
+            in_progress = s <= now <= e
+            soon = (s - now).total_seconds() < 3600 and s >= now
+            ts = s.strftime("%H:%M")
+            te = e.strftime("%H:%M")
+            if in_progress:
+                when = f"{B}\033[33m▶ {ts}–{te}{R}"
+            elif soon:
+                when = f"{B}\033[36m{ts}–{te}{R}     "
+            else:
+                when = f"{ts}–{te}     "
+        summary = ev.get("summary", "(no title)")
+        location = ev.get("location", "")
+        cal_tag = f" {DIM}[{cal.get('summary','')}]{R}"
+        head = f"{DIM}│{R} {color}●{R} {when}  {summary}{cal_tag}"
+        print(head)
+        if location:
+            print(f"{DIM}│       {ITAL}@ {location}{R}")
+            if api_key and not allday and s > now:
+                data = get_directions(api_key, ORIGIN, location, int(s.timestamp()))
+                line = summarize_directions(data)
+                if line:
+                    print(f"{DIM}│       {R}{line}")
+        if not allday and not (s <= now <= e):
+            until = s - now
+            if until.total_seconds() > 0 and until.total_seconds() < 12 * 3600:
+                print(f"{DIM}│       in {fmt_duration(until)}{R}")
+    print(f"{B}└{'─' * (cols - 1)}{R}")
+
+def obtain_creds(
+    credentials_file: str = CREDENTIALS_FILE,
+    client_secrets_file: str = CLIENT_SECRETS_FILE,
+    scopes: list[str] = SCOPES,
+) -> Credentials:
+    creds = None
+
+    # Load existing credentials if available
+    if os.path.exists(credentials_file):
+        with open(credentials_file, "r") as f:
+            data = json.load(f)
+        creds = Credentials(
+            token=data.get("token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=data.get("client_id"),
+            client_secret=data.get("client_secret"),
+            scopes=data.get("scopes", scopes),
+        )
+
+    # Refresh if expired
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+
+    # Run OAuth flow if no valid creds
+    elif not creds or not creds.valid:
+        flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes)
+        creds = flow.run_local_server(port=0)
+
+    # Persist updated credentials
+    updated = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": list(creds.scopes) if creds.scopes else scopes,
+        "expiry": creds.expiry.isoformat() if creds.expiry else None,
+    }
+    with open(credentials_file, "w") as f:
+        json.dump(updated, f, indent=2)
+
+    return creds
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Show upcoming Google Calendar events.")
+    ap.add_argument("--pick", action="store_true", help="re-run the calendar picker")
+    ap.add_argument("--auth", action="store_true", help="re-run OAuth flow")
+    ap.add_argument("--hours", type=int, default=48, help="hours ahead to show (default 48)")
+    ap.add_argument("--list", action="store_true", help="list selected calendars and exit")
+    ap.add_argument("--no-directions", action="store_true", help="skip Google Maps directions for events with a location")
+    args = ap.parse_args()
+
+    if args.auth and TOKEN_FILE.exists():
+        TOKEN_FILE.unlink()
+    creds = load_creds()
+
+    picked = load_picked()
+    if args.pick or picked is None:
+        picked = pick_calendars(creds)
+
+    if args.list:
+        for c in picked:
+            color = fg_hex(c.get("backgroundColor", "#888888"))
+            print(f"  {color}●{R} {c['summary']}  {DIM}{c['id']}{R}")
+        return 0
+
+    events = fetch_events(creds, picked, args.hours)
+    render(events, args.hours, show_directions=not args.no_directions)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
