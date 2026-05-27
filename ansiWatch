@@ -1,0 +1,337 @@
+#!/bin/bash
+#
+#  TODO: precise ansi cursor control with chr erasure [insert codes here]
+#     maybe cshell
+#
+#  args processing:  go 4 it, feel free to insert yaml getopt foo below
+#
+#
+#  April 2026 Nathaniel Lallya
+#
+
+CMD=$1
+
+rm /tmp/ansiWatch*
+
+#console font
+#FONTFACE
+#FONTSIZE
+#sudo setfont /usr/share/consolefonts/Lat15-
+#sudo setfont /usr/share/consolefonts/Lat38-Terminus32x16.psf.gz
+FONT=""
+FONTLETTERS="Alpha"
+FONTLETTERS="Crazy"
+FONTLETTERS="caligraphy"
+FONTLETTERS="broadway"
+FONTSPACE="broadway"
+FONTSPACE="1Row"
+TMPFILE=/tmp/ansiWatchScreen.$USER
+
+FONT_H1=("DOS_Rebel" "Banner3-D" "Crazy" "Electronic" "Epic" "Georgian" "Reverse" "Starwars")
+FONT_H2=("standard" "doom" "script" "standard" "utopia" "Roman")
+FONT_H3=("script" "3d" "Big" "doom" "script" "standard" "Thin" "utopia")
+#amc3line is good for lots of text
+
+ # Initialize indices for circular arrays
+index1=0
+index2=0
+index3=0
+
+
+#Black: 0;30
+#  • Red: 0;31
+#   • Green: 0;32
+#    • Yellow: 0;33
+#     • Blue: 0;34
+#      • Purple: 0;35
+#       • Cyan: 0;36
+#p        • White: 0;37
+ RED='\033[0;31m'
+ GREEN='\033[0;32m'
+ YELLOW='\033[0;33m'
+ BLUE='\033[0;34m'
+ PURPLE='\033[0;35m'
+ CYAN='\033[0;36m'
+ WHITE='\033[0;37m'
+ NC='\033[0m' # No Color
+
+if [ -z "$FONT" ]; then
+	FONT="broadway" #no numbers
+	FONT="Big_Money-nw"
+	FONT="3d_diagonal"
+	FONT="ANSI_Shadow"
+fi
+RENDER="toilet  -t -S -f term"
+
+W=350
+H=90
+CX=175
+CY=45
+
+Y=80
+X=80
+
+function clock() {
+	local OUTFILE="$1"
+	term_width=120
+	TIME=$(date +"%l:%M:%S %P")
+	DAY=$(date +"%_m/%d/%g")
+	DAY=$(date +"%A")
+	DATE=$(date +"%B %d")
+
+	#setfont /usr/share/consolefonts/Uni2-TerminusBold28x14.psf.gz
+#	setfont Uni2-TerminusBoldVGA
+
+#cleaner, thinner lines
+#	setfont Uni3-Fixed18
+#
+#	setfont Uni3-TerminusBold28x14
+#	setfont Uni1-VGA8
+#	setfont Uni1-VGA28x16
+	echo "__" | toilet -f $FONTSPACE  >> $OUTFILE
+	echo "___" | toilet -f $FONTSPACE  >> $OUTFILE
+	echo "$TIME" | toilet -c -w $term_width -Sk -f $FONT >> $OUTFILE
+	#echo "$TIME" | toilet -c -t -Sk -f $FONT >> $OUTFILE
+	echo "___" | toilet -f $FONTSPACE  >> $OUTFILE
+	echo "$DAY" | toilet -cs -w $term_width -f $FONTLETTERS >> $OUTFILE
+	#echo "$DAY" | toilet -cs -t -f $FONTLETTERS >> $OUTFILE
+	echo "___" | toilet -f $FONTSPACE  >> $OUTFILE
+	echo "___" | toilet -f $FONTSPACE >> $OUTFILE
+	echo "$DATE" | toilet -c -w $term_width -Sk -f $FONT >> $OUTFILE
+	#echo "$DATE" | toilet -c -t -Sk -f $FONT >> $OUTFILE
+}
+
+ # Function to parse command output and print using toilet
+ parse_and_print() {
+     local output="$1"
+     local OUTFILE="$2"
+
+     # use tput cols after setfont
+     term_width=240
+     local IFS=$'\n'  # Set internal field separator to newline
+
+     for line in $output; do
+         # Split the line into fields
+         local name=" "$(echo "$line" | cut -f1)" "
+         local temp=$(echo "$line" | cut -f2)
+         local wind=" "$(echo "$line" | cut -f3)
+         local short=$(echo "$line" | cut -f4)
+         local long=$(echo "$line" | cut -f5)
+
+	echo "___" | toilet -f $FONTSPACE >> $OUTFILE
+
+         # Print field1 using the current font from fonts1
+	 echo -e "${CYAN}$(toilet -w $term_width -f ${FONT_H1[index1]} <<< $name)${NC}" > $OUTFILE.1
+
+         # Print field2 using the current font from fonts2
+	 echo -e "${WHITE}$(toilet -s -w $term_width -f ${FONT_H2[index2]} <<< $temp)${NC}" > $OUTFILE.2
+
+	#
+
+	 echo -e "${BLUE}$(toilet -s -w $term_width -f ${FONT_H2[index2]} <<< $wind)${NC}" > $OUTFILE.3
+
+
+#  pad the above files to all be same line count
+#
+lines1=$(wc -l < "$OUTFILE.1")
+lines2=$(wc -l < "$OUTFILE.2")
+lines3=$(wc -l < "$OUTFILE.3")
+max=$((lines1 > lines2 ? lines1 : lines2))
+max=$((max > lines3 ? max : lines3))
+pad1=$((max - lines1))
+pad2=$((max - lines2))
+pad3=$((max - lines3))
+pad_file() {
+	local file=$1
+	local padding=$2
+	local top=$(( padding / 2 ))
+	local bottom=$(( padding / 2 ))
+	if (( (top + bottom) < padding )); then
+		bottom=$(( bottom + 1 ))
+	fi
+	local output="${file}.padded"
+	{
+		for ((i=0; i<top; i++)); do
+			echo ""
+		done
+		cat "$file"
+		for ((i=0; i<bottom; i++)); do
+			echo ""
+		done
+	} > "$output"
+}
+pad_file "$OUTFILE.1" $pad1
+pad_file "$OUTFILE.2" $pad2
+pad_file "$OUTFILE.3" $pad3
+
+  # Apply colors and combine horizontally
+  while IFS= read -r line1 <&3 && IFS= read -r line2 <&4 && IFS= read -r line3 <&5; do
+    printf "${CYAN}%s${NC}${GREEN}%s${NC}${BLUE}%s${NC}\n" "$line1" "$line2" "$line3" >> $OUTFILE
+  done 3<"$OUTFILE.1.padded" 4<"$OUTFILE.2.padded" 5<"$OUTFILE.3.padded"
+
+	#echo "___" | toilet -w $term_width -f $FONTSPACE >> $OUTFILE
+
+         toilet -cs -w $term_width -f "${FONT_H3[index3]}" <<< "$short" >> $OUTFILE
+
+	echo "___" | toilet -w $term_width -f $FONTSPACE >> $OUTFILE
+     done
+}
+
+function display_gcal48() {
+	term_width=60
+	#smallest possible terminal console font
+#	setfont Uni2-DejaVuBold59x32
+	setfont Uni2-DejaVu43x24
+}
+function display_clock() {
+	#smallest possible terminal console font
+	term_width=30
+	setfont Uni2-DejaVuBold30x16
+}
+
+function display_weather() {
+	#smallest possible terminal console font
+	#setfont Uni1-VGA8
+	setfont Uni1-VGA16
+	term_width=240
+	term_width=$(tput cols)
+}
+
+function weather() {
+	local OUTFILE="$1"
+	local WEATHER=$("/home/nathaniel/bin/weather_today.py")
+	term_width=240
+
+	echo "$WEATHER" > /tmp/ansiWatchWeather.$USER
+	parse_and_print "$WEATHER" "$OUTFILE"
+}
+
+function gcal48() {
+	local OUTFILE="$1"
+	term_width=60
+	EV=$("/home/nathaniel/bin/gcal48")
+	echo "$EV" >> $OUTFILE
+}
+
+printf "\033[2J"
+
+
+#update_output_cache=("weather" "clock" "gcal48")
+update_output_cache=("clock" "weather" "gcal48")
+update_index=0
+
+carousel_interval=10
+update_interval=300
+start_time=$(date +%s)
+
+
+update_time=$(date +%s)
+rm /tmp/ansiWatch*
+for element in "${update_output_cache[@]}"; do
+	cb_func="$element"
+	display_file="$TMPFILE.$cb_func"
+	printf "\033[H\033[1J" > $display_file
+	eval "$cb_func $display_file" &
+done
+
+
+
+#cb_func="${update_output_cache[0]}"
+#display_file="$TMPFILE.$cb_func"
+#printf "\033[H\033[1J" > $display_file
+#eval "$cb_func $display_file"
+
+printf "\033[2j"
+eval "display_$cb_func"
+#cat $display_file
+
+#next_cb_func="${update_output_cache[1]}"
+#next_display_file="$TMPFILE.$next_cb_func"
+#printf "\033[H\033[1J" > $next_display_file
+#eval "$next_cb_func $next_display_file" &
+
+while true; do
+     step=0
+
+     # Get the current time in seconds since the epoch
+     current_time=$(date +%s)
+
+     # Calculate the elapsed time
+     elapsed_time=$((current_time - start_time))
+     elapsed_time_update=$((current_time - update_time))
+
+
+     read -n1 -s -t0.7 key
+
+     # Check if a key was pressed
+     if [[ $? -eq 0 ]]; then
+         # Check for arrow keys
+         if [[ $key == $'\e' ]]; then
+             read -n2 -s -t0.1 key
+             case "$key" in
+                 '[A') echo -n "Up arrow pressed       "
+			;;
+                 '[B') echo -n "Down arrow pressed     "
+			;;
+                 '[C') echo -n "Right arrow pressed    "
+			step=1
+			;;
+                 '[D') echo -n "Left arrow pressed     "
+			step=-1
+			;;
+             esac
+         fi
+     fi
+
+     #  rotate carousel
+     #
+     if (( elapsed_time >= carousel_interval )); then
+	step=1
+     fi
+
+     #  step iterator, prepate variables for printing correct screen 
+     #
+     if (( step != 0 )); then
+
+	#  step update_index, set cb_func and display_file to new screen
+	#
+        update_index=$(( (update_index + step) % ${#update_output_cache[@]} ))
+	if (( update_index < 0 )); then
+		update_index = ${#update_output_cache[@]}
+	fi
+	cb_func="${update_output_cache[update_index]}"
+	display_file="$TMPFILE.$cb_func"
+
+
+     #  set console font using display_${func}
+     #
+     eval "display_$cb_func"
+	#printf "\033[2j"
+clear
+
+        # Reset the start time
+        start_time=$current_time
+     fi
+
+     #  clock is the only function that requires an update every loop
+     #
+     if [ "$cb_func" == "clock" ]; then
+	printf "\033[H\033[1J" > "$display_file"
+	eval "$cb_func $display_file"
+     fi
+
+     if (( elapsed_time_update >= update_interval )); then
+update_time=$(date +%s)
+for element in "${update_output_cache[@]}"; do
+	ucb_func="$element"
+	udisplay_file="$TMPFILE.$ucb_func"
+	printf "\033[H\033[1J" > $udisplay_file
+	eval "$ucb_func $udisplay_file" &
+done
+     fi
+
+     #
+     cat $display_file
+     sleep 0.2
+
+done

@@ -82,7 +82,7 @@ def print_usage():
     print("  --raw: Print the raw JSON output")
 
 # Print the weather forecast in a human-readable format
-def print_human_readable_forecast(forecast_data):
+def print_human_readable_forecast(forecast_data, long=False):
     if not forecast_data or 'properties' not in forecast_data or 'periods' not in forecast_data['properties']:
         print("No forecast data available.")
         return
@@ -93,8 +93,13 @@ def print_human_readable_forecast(forecast_data):
         return
 
 #    print(f"\t\tTemperature:\tWind:\tForecast:")
-    for period in periods:
-        print(f"{period['name']}: {period['temperature']} {period['temperatureUnit']} * {period['windSpeed']}\n{period['shortForecast']}")
+    degree='°'
+    if not long:
+        for period in periods:
+            print(f"{period['name']}\t{period['temperature']}{degree}{period['temperatureUnit']} wind {period['windSpeed']} {period['windDirection']}\t{period['shortForecast']}")
+    else:
+        for period in periods:
+            print(f"{period['name']}\t{period['detailedForecast']}")
 
 
 if __name__ == "__main__":
@@ -123,6 +128,8 @@ if __name__ == "__main__":
     # Check for the --raw flag
     if "--raw" in sys.argv:
         print(json.dumps(filtered_forecast, indent=2))
+    elif "--long" in sys.argv:
+        print_human_readable_forecast(filtered_forecast,True)
     elif len(sys.argv) > 1:
         print_usage()
     else:
